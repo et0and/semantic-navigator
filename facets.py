@@ -8,11 +8,9 @@ import math
 import numpy
 import openai
 import os
-import pinecone
 import scipy
 import sklearn
 import tiktoken
-import xxhash
 
 async def main():
     parser = argparse.ArgumentParser(
@@ -23,29 +21,6 @@ async def main():
     parser.add_argument('repository')
     arguments = parser.parse_args()
 
-    async with pinecone.PineconeAsyncio() as pinecone_client:
-        index_name = "facets"
-
-        try:
-            description = await pinecone_client.describe_index(name=index_name)
-
-        except pinecone.exceptions.exceptions.NotFoundException:
-            description = await pinecone_client.create_index(
-                name=index_name,
-                metric=pinecone.Metric.COSINE,
-                spec=pinecone.ServerlessSpec(
-                    cloud=pinecone.CloudProvider.AWS,
-                    region=pinecone.AwsRegion.US_EAST_1,
-                ),
-                dimension=3072,
-                vector_type="dense",
-                timeout=None
-            )
-
-        async with pinecone_client.IndexAsyncio(host=description.host) as index:
-            await run(arguments, index)
-
-async def run(arguments, index):
     repository = git.Repo(arguments.repository)
 
     embedding_model = "text-embedding-3-large"
@@ -73,29 +48,19 @@ async def run(arguments, index):
 
                 annotated = f"{entry}:\n\n{text}"
 
-                key = xxhash.xxh3_64(annotated.encode("utf-8")).hexdigest()
+                tokens = embedding_encoding.encode(annotated)
 
-                try:
-                    response = await index.fetch([key])
+                # TODO: chunk instead of truncate
+                truncated = tokens[:8192]
 
-                    return [ (entry, response.vectors[key].values) ]
+                input = embedding_encoding.decode(truncated)
 
-                except KeyError:
-                    tokens = embedding_encoding.encode(annotated)
+                async with semaphore:
+                    response = await openai_client.embeddings.create(model=embedding_model, input=input)
 
-                    # TODO: chunk instead of truncate
-                    truncated = tokens[:8192]
+                embedding = response.data[0].embedding
 
-                    input = embedding_encoding.decode(truncated)
-
-                    async with semaphore:
-                        response = await openai_client.embeddings.create(model=embedding_model, input=input)
-
-                    embedding = response.data[0].embedding
-
-                    await index.upsert([(key, embedding)])
-
-                    return [ (entry, embedding) ]
+                return [ (entry, embedding) ]
 
         except UnicodeDecodeError:
             # Ignore documents that aren't UTF-8
@@ -111,7 +76,11 @@ async def run(arguments, index):
             # handled
             return [ ]
 
+    print("Embedding files…")
+
     results = list(itertools.chain.from_iterable(await asyncio.gather(*(embed(entry) for entry, _ in repository.index.entries))))
+
+    print("Clustering files…")
 
     entries, embeddings = zip(*results)
 

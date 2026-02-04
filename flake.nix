@@ -12,10 +12,8 @@
                 python.aiohttp-retry
                 python.gitpython
                 python.openai
-                python.pinecone-client
                 python.scikit-learn
                 python.tiktoken
-                python.xxhash
               ]);
 
             in
