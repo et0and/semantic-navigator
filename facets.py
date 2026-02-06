@@ -344,6 +344,7 @@ class UI(textual.app.App):
         def loop(node, children):
             for child in children:
                 n = node.add(child.label)
+                n.allow_expand = bool(child.children)
                 loop(n, child.children)
 
         loop(self.treeview.root, self.tree_.children)
@@ -361,9 +362,14 @@ def main():
 
     facets = initialize()
 
-    initial_cluster = asyncio.run(embed(facets, arguments.repository))
+    async def async_tasks():
+        initial_cluster = await embed(facets, arguments.repository)
 
-    tree_ = asyncio.run(tree(facets, arguments.repository, initial_cluster))
+        tree_ = await tree(facets, arguments.repository, initial_cluster)
+
+        return tree_
+
+    tree_ = asyncio.run(async_tasks())
 
     UI(tree_).run()
 
