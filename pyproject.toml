@@ -1,5 +1,5 @@
 [project]
-name = "facet-navigator"
+name = "semantic-navigator"
 version = "1.0.0"
 description = "A semantic project navigator"
 readme = "README.md"
@@ -14,4 +14,4 @@ dependencies = [
     "tqdm",
 ]
 [project.scripts]
-facet-navigator = "facet_navigator.main:main"
+semantic-navigator = "semantic_navigator.main:main"
