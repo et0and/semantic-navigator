@@ -445,4 +445,5 @@ def main():
 
     UI(tree_).run()
 
-main()
+if __name__ == "__main__":
+    main()

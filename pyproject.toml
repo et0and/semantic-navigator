@@ -1,0 +1,17 @@
+[project]
+name = "facet-navigator"
+version = "1.0.0"
+description = "A semantic project navigator"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiofiles",
+    "gitpython",
+    "openai[aiohttp]",
+    "scikit-learn",
+    "textual",
+    "tiktoken",
+    "tqdm",
+]
+[project.scripts]
+facet-navigator = "facet_navigator.main:main"

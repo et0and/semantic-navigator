@@ -1,31 +1,46 @@
-{ outputs = { flake-utils, nixpkgs, self }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let
-        pkgs = nixpkgs.legacyPackages."${system}";
+{ inputs.pyproject-nix = {
+    url = "github:pyproject-nix/pyproject.nix";
 
-      in
-        { packages.default =
-            let
-              python = pkgs.python3.withPackages (python: [
-                python.aiofiles
-                python.aiohttp
-                python.aiohttp-retry
-                python.gitpython
-                python.openai
-                python.scikit-learn
-                python.textual
-                python.tiktoken
-                python.tqdm
-              ]);
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
 
-            in
-              pkgs.writeShellApplication {
-                name = "facets";
+  outputs = { nixpkgs, pyproject-nix, ... }:
+    let
+      inherit (nixpkgs) lib;
 
-                runtimeInputs = [ python ];
+      forAllSystems = lib.genAttrs lib.systems.flakeExposed;
 
-                text = ''python ${./facets.py} "$@"'';
-              };
-        }
-    );
+      project = pyproject-nix.lib.project.loadPyproject {
+        projectRoot = ./.;
+      };
+
+    in
+      { devShells = forAllSystems (system:
+          let
+            pkgs = nixpkgs.legacyPackages.${system};
+
+            python = pkgs.python3;
+
+            renderer = project.renderers.withPackages { inherit python; };
+
+            pythonEnv = python.withPackages renderer;
+
+          in
+            { default = pkgs.mkShell { packages = [ pythonEnv ]; }; }
+        );
+
+        packages = forAllSystems (system:
+          let
+            pkgs = nixpkgs.legacyPackages.${system};
+
+            python = pkgs.python3;
+
+            renderer = project.renderers.buildPythonPackage {
+              inherit python;
+            };
+
+          in
+            { default = python.pkgs.buildPythonPackage renderer; }
+        );
+      };
 }
