@@ -15,6 +15,7 @@
                 python.scikit-learn
                 python.textual
                 python.tiktoken
+                python.tqdm
               ]);
 
             in

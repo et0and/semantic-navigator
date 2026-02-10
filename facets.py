@@ -22,6 +22,7 @@ from numpy import float32
 from numpy.typing import NDArray
 from openai import AsyncOpenAI
 from tiktoken import Encoding
+from tqdm.asyncio import tqdm_asyncio
 from typing import Iterable, TypeVar
 
 max_tokens_per_embed = 8192
@@ -68,8 +69,6 @@ class Cluster:
     embeds: list[Embed]
 
 async def embed(facets: Facets, repository: str) -> Cluster:
-    print("[+] Embedding files")
-
     repo = Repo(repository)
 
     async def read(path):
@@ -108,9 +107,14 @@ async def embed(facets: Facets, repository: str) -> Cluster:
             # handled
             return [ ]
 
-    tasks = [ read(path) for path, _ in repo.index.entries ]
+    tasks = tqdm_asyncio.gather(
+        *(read(path) for path, _ in repo.index.entries),
+        desc = "Reading files",
+        unit = "file",
+        leave = False
+    )
 
-    results = list(itertools.chain.from_iterable(await asyncio.gather(*tasks)))
+    results = list(itertools.chain.from_iterable(await tasks))
 
     paths, contents = zip(*results)
 
@@ -126,11 +130,14 @@ async def embed(facets: Facets, repository: str) -> Cluster:
             numpy.asarray(datum.embedding, float32) for datum in response.data
         ]
 
-    tasks = [
-        embed_batch(input) for input in itertools.batched(contents, max_embeds)
-    ]
+    tasks = tqdm_asyncio.gather(
+        *(embed_batch(input) for input in itertools.batched(contents, max_embeds)),
+        desc = "Embedding contents",
+        unit = "batch",
+        leave = False
+    )
 
-    embeddings = list(itertools.chain.from_iterable(await asyncio.gather(*tasks)))
+    embeddings = list(itertools.chain.from_iterable(await tasks))
 
     embeds = [
         Embed(path, content, embedding)
@@ -140,8 +147,6 @@ async def embed(facets: Facets, repository: str) -> Cluster:
     return Cluster(embeds)
 
 def cluster(input: Cluster) -> list[Cluster]:
-    print("[+] Clustering embeddings")
-
     if len(input.embeds) <= max_leaves:
         return []
 
@@ -302,7 +307,6 @@ def zipper(elements: list[A]) -> list[tuple[list[A], A, list[A]]]:
         (elements[:index], element, elements[index + 1:])
         for index, element in enumerate(elements)
     ]
-
 
 def to_pattern(files):
     prefix = os.path.commonprefix(files)
