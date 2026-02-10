@@ -90,7 +90,11 @@ async def embed(facets: Facets, repository: str) -> Cluster:
                 return [
                     (path, facets.embedding_encoding.decode(annotation_tokens + list(chunk)))
 
-                    for chunk in itertools.batched(text_tokens, max_tokens_per_chunk)
+                    # TODO: This currently only takes the first chunk because
+                    # GPT has trouble labeling chunks in order when multiple
+                    # chunks have the same file name.  Remoe the `[:1]` when
+                    # this is fixed.
+                    for chunk in list(itertools.batched(text_tokens, max_tokens_per_chunk))[:1]
                 ]
 
         except UnicodeDecodeError:
