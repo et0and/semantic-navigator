@@ -3,13 +3,10 @@ import argparse
 import asyncio
 import collections
 import dataclasses
-import git
 import itertools
 import math
 import numpy
-import openai
 import os
-import pathlib
 import scipy
 import sklearn
 import textual
@@ -23,7 +20,7 @@ from numpy.typing import NDArray
 from openai import AsyncOpenAI
 from tiktoken import Encoding
 from tqdm.asyncio import tqdm_asyncio
-from typing import Iterable, TypeVar
+from typing import TypeVar
 
 max_tokens_per_embed = 8192
 
@@ -408,7 +405,7 @@ class UI(textual.app.App):
 
     async def on_mount(self):
         self.treeview = textual.widgets.Tree(f"{self.tree_.label} ({len(self.tree_.files)})")
-        def loop(node, files, children):
+        def loop(node, children):
             for child in children:
                 if len(child.files) <= 1:
                     n = node.add(child.label)
@@ -417,9 +414,9 @@ class UI(textual.app.App):
                     n = node.add(f"{child.label} ({len(child.files)})")
                     n.allow_expand = True
 
-                    loop(n, child.files, child.children)
+                    loop(n, child.children)
 
-        loop(self.treeview.root, self.tree_.files, self.tree_.children)
+        loop(self.treeview.root, self.tree_.children)
 
         self.mount(self.treeview)
 
