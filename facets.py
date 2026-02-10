@@ -28,6 +28,8 @@ max_tokens_per_embed = 8192
 
 max_tokens_per_batch_embed = 300000
 
+max_leaves = 7
+
 @dataclasses.dataclass(frozen=True)
 class Facets:
     openai_client: AsyncOpenAI
@@ -123,7 +125,7 @@ async def embed(facets: Facets, repository: str) -> Cluster:
 def cluster(input: Cluster) -> list[Cluster]:
     print("[+] Clustering embeddings")
 
-    if len(input.embeds) < 7:
+    if len(input.embeds) <= max_leaves:
         return []
 
     entries, contents, embeddings = zip(*((embed.entry, embed.content, embed.embedding) for embed in input.embeds))
@@ -163,7 +165,7 @@ def cluster(input: Cluster) -> list[Cluster]:
 
     results = [
         get_nearest_neighbors(n_neighbors)
-        for n_neighbors in candidate_neighbor_counts
+        for n_neighbors in list(candidate_neighbor_counts) + [ N - 1 ]
     ]
 
     n_neighbors, nearest_neighbors = [
@@ -324,21 +326,20 @@ async def label_leaves(facets: Facets, c: Cluster) -> list[Tree]:
 
         input = f"Describe in a few words what distinguishes this file:\n\n{here}\n\n… from these other files:\n\n{other}\n\nYour response in its entirety should be a succinct description (≈3 words) without any explanation/context/rationale because the full text of what you say will be used as the file label without any trimming."
 
-        response = await facets.openai_client.chat.completions.create(
+        response = await facets.openai_client.responses.create(
             model = facets.completion_model,
-            messages = [ { "role": "user", "content": input } ],
-            temperature = 0,
-            seed = 0
+            input = input,
+            temperature = 0
         )
 
         files = [ embed.entry ]
 
-        return Tree(f"{embed.entry}: {response.choices[0].message.content}", files, [])
+        return Tree(f"{embed.entry}: {response.output_text}", files, [])
 
     return await asyncio.gather(*(label(tuple) for tuple in zipper(c.embeds)))
 
 async def label_nodes(facets: Facets, c: Cluster) -> list[Tree]:
-    if len(c.embeds) <= 7:
+    if len(c.embeds) <= max_leaves:
         return await label_leaves(facets, c)
     else:
         async def label(element: tuple[list[list[Tree]], list[Tree], list[list[Tree]]]) -> Tree:
@@ -353,18 +354,17 @@ async def label_nodes(facets: Facets, c: Cluster) -> list[Tree]:
 
             input = f"Describe in a few words what distinguish this cluster:\n\n{here}\n\n… from these other clusters:\n\n{other}\n\nYour response in its entirety should be a succinct description (≈3 words) without any explanation/context/rationale because the full text of what you say will be used as the file label without any trimming."
 
-            response = await facets.openai_client.chat.completions.create(
+            response = await facets.openai_client.responses.create(
                 model = facets.completion_model,
-                messages = [ { "role": "user", "content": input } ],
-                temperature = 0,
-                seed = 0
+                input = input,
+                temperature = 0
             )
 
             files = [ file for child in children for file in child.files ]
 
             pattern = to_pattern(files)
 
-            return Tree(f"{pattern}{response.choices[0].message.content}", files, children)
+            return Tree(f"{pattern}{response.output_text}", files, children)
 
         children = cluster(c)
 
