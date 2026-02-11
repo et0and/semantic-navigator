@@ -26,8 +26,6 @@ max_tokens_per_embed = 8192
 
 max_tokens_per_batch_embed = 300000
 
-max_leaves = 20
-
 max_clusters = 20
 
 @dataclass(frozen = True)
@@ -156,15 +154,15 @@ async def embed(facets: Facets, repository: str) -> Cluster:
     return Cluster(embeds)
 
 def cluster(input: Cluster) -> list[Cluster]:
-    if len(input.embeds) <= max_leaves:
-        return []
+    N = len(input.embeds)
+
+    if N <= 1:
+        return [input]
 
     entries, contents, embeddings = zip(*(
         (embed.entry, embed.content, embed.embedding)
         for embed in input.embeds
     ))
-
-    N = len(embeddings)
 
     # The following code computes an affinity matrix using a radial basis
     # function with an adaptive adaptive σ.  See:
@@ -192,22 +190,23 @@ def cluster(input: Cluster) -> list[Cluster]:
             n_jobs = -1
         ).fit(normalized)
 
-        directed_graph = nearest_neighbors.kneighbors_graph(
+        graph = nearest_neighbors.kneighbors_graph(
             mode = "connectivity"
         )
 
-        undirected_graph = directed_graph.maximum(directed_graph.T)
+        n_components, _ = scipy.sparse.csgraph.connected_components(
+            graph,
+            directed = False
+        )
 
-        components, _ = scipy.sparse.csgraph.connected_components(undirected_graph)
-
-        return components, n_neighbors, nearest_neighbors
+        return n_components, n_neighbors, nearest_neighbors
 
     # We don't attempt to find the absolute lowest value of K (`n_neighbors`).
     # Instead we just sample a few values and pick a "small enough" one.
     candidate_neighbor_counts = list(itertools.takewhile(
         lambda x: x < N,
         (round(math.exp(n)) for n in itertools.count())
-    )) + [ math.ceil(N / 2) ]
+    )) + [ math.floor(N / 2) ]
 
     results = [
         get_nearest_neighbors(n_neighbors)
@@ -220,11 +219,11 @@ def cluster(input: Cluster) -> list[Cluster]:
     # component.
     n_neighbors, nearest_neighbors = [
         (n_neighbors, nearest_neighbors)
-        for components, n_neighbors, nearest_neighbors in results
-        if components == 1
+        for n_components, n_neighbors, nearest_neighbors in results
+        if n_components == 1
     ][0]
 
-    distances, indices = nearest_neighbors.kneighbors(normalized)
+    distances, indices = nearest_neighbors.kneighbors()
 
     # sigmas[i] = the distance of semantic embedding #i to its Kth nearest
     # neighbor
@@ -248,20 +247,6 @@ def cluster(input: Cluster) -> list[Cluster]:
     affinity.setdiag(1.0)
     affinity.eliminate_zeros()
 
-    # This is actually the *maximum* number of clusters that the algorithm can
-    # return.
-    #
-    # The algorithm is actually fast enough to return a much larger number of
-    # clusters and sometimes you find much more optimal clusterings at much
-    # higher cluster counts.  For example, I've seen repositories where the
-    # optimal cluster count was 600+ (and the results were indeed good based on
-    # visual inspection).  However, we cap the maximum cluster count to avoid
-    # presenting too many clusters to the user at any level of the decision
-    # tree.
-    #
-    # As a bonus, capping the cluster count improves performance, too.
-    n_clusters = min(N - 1, max_clusters)
-
     # The following code is basically `sklearn.manifold.spectral_embeddings`,
     # but exploded out so that we can get access to the eigenvalues, which are
     # normally not exposed by the function.  We'll need those eigenvalues
@@ -281,19 +266,36 @@ def cluster(input: Cluster) -> list[Cluster]:
 
     laplacian *= -1
     v0 = random_state.uniform(-1, 1, N)
-    eigenvalues, eigenvectors = scipy.sparse.linalg.eigsh(
-        laplacian,
-        k = n_clusters,
-        sigma = 1.0,
-        which = 'LM',
-        tol = 0.0,
-        v0 = v0
-    )
-    wide_spectral_embeddings = eigenvectors.T[n_clusters::-1] * dd
+
+    if max_clusters + 1 < N:
+        k = max_clusters + 1
+
+        eigenvalues, eigenvectors = scipy.sparse.linalg.eigsh(
+            laplacian,
+            k = k,
+            sigma = 1.0,
+            which = 'LM',
+            tol = 0.0,
+            v0 = v0
+        )
+    else:
+        k = N
+
+        eigenvalues, eigenvectors = scipy.linalg.eigh(
+            laplacian.toarray(),
+            check_finite = False
+        )
+
+    indices = numpy.argsort(eigenvalues)[::-1]
+
+    eigenvalues = eigenvalues[indices]
+
+    eigenvectors = eigenvectors[:, indices]
+
+    wide_spectral_embeddings = eigenvectors.T / dd
     wide_spectral_embeddings = sklearn.utils.extmath._deterministic_vector_sign_flip(wide_spectral_embeddings)
-    wide_spectral_embeddings = wide_spectral_embeddings[1:n_clusters].T
-    eigenvalues = eigenvalues[n_clusters::-1]
-    eigenvalues *= -1
+    wide_spectral_embeddings = wide_spectral_embeddings[1:k].T
+    eigenvalues = eigenvalues * -1
 
     # Find the optimal cluster count by looking for the largest eigengap
     #
@@ -301,8 +303,8 @@ def cluster(input: Cluster) -> list[Cluster]:
     #
     #     numpy.argmax(numpy.diff(eigenvalues))
     #
-    # … is because we want at least two clusters (otherwise what's the point?).
-    n_clusters = numpy.argmax(numpy.diff(eigenvalues)[2:]) + 2
+    # … is because we want at least one cluster
+    n_clusters = numpy.argmax(numpy.diff(eigenvalues)) + 1
 
     spectral_embeddings = wide_spectral_embeddings[:, :n_clusters]
 
@@ -357,7 +359,9 @@ class Labels(BaseModel):
     labels: list[str]
 
 async def label_nodes(facets: Facets, c: Cluster) -> list[Tree]:
-    if len(c.embeds) <= max_leaves:
+    children = cluster(c)
+
+    if len(children) == 1:
         def render_embed(embed: Embed) -> str:
             return f"# File: {embed.entry}\n\n{embed.content}"
 
@@ -381,8 +385,6 @@ async def label_nodes(facets: Facets, c: Cluster) -> list[Tree]:
         ]
 
     else:
-        children = cluster(c)
-
         treess = await tqdm_asyncio.gather(
             *(label_nodes(facets, child) for child in children),
             desc = "Labeling clusters",
