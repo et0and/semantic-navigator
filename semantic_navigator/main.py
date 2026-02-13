@@ -154,8 +154,8 @@ async def embed(facets: Facets, repository: str) -> Cluster:
 
     return Cluster(embeds)
 
-# The clustering algorithm works can go as low as 1 here, but we set it higher
-# for two reasons:
+# The clustering algorithm can go as low as 1 here, but we set it higher for
+# two reasons:
 #
 # - it's easier for users to navigate when there is more branching at the
 #   leaves
@@ -175,7 +175,7 @@ def cluster(input: Cluster) -> list[Cluster]:
     ))
 
     # The following code computes an affinity matrix using a radial basis
-    # function with an adaptive adaptive σ.  See:
+    # function with an adaptive σ.  See:
     #
     #     L. Zelnik-Manor, P. Perona (2004), "Self-Tuning Spectral Clustering"
 
@@ -188,11 +188,11 @@ def cluster(input: Cluster) -> list[Cluster]:
     #
     # The reason we want to avoid multiple connected components is because if
     # we have more than one connected component then those connected components
-    # will dominate the clusters suggested by spectral cluster.  We don't want
-    # that because we don't want spectral clustering to degenerate to the same
-    # result as K nearest neighbors.  We want the K nearest neighbors algorithm
-    # to weakly inform the spectral clustering algorithm without dominating the
-    # result.
+    # will dominate the clusters suggested by spectral clustering.  We don't
+    # want that because we don't want spectral clustering to degenerate to the
+    # same result as K nearest neighbors.  We want the K nearest neighbors
+    # algorithm to weakly inform the spectral clustering algorithm without
+    # dominating the result.
     def get_nearest_neighbors(n_neighbors):
         nearest_neighbors = sklearn.neighbors.NearestNeighbors(
             n_neighbors = n_neighbors,
@@ -225,7 +225,7 @@ def cluster(input: Cluster) -> list[Cluster]:
 
     # Find the first sample value of K (`n_neighbors`) that produces one
     # connected component.  There's guaranteed to be at least one since the
-    # very last value we sample (⌈N/2⌉) always produces one connected
+    # very last value we sample (⌊N/2⌋) always produces one connected
     # component.
     n_neighbors, nearest_neighbors = [
         (n_neighbors, nearest_neighbors)
