@@ -14,7 +14,7 @@ import textual.widgets
 import tiktoken
 
 from dataclasses import dataclass
-from git import Repo
+from dulwich.repo import Repo
 from itertools import batched, chain
 from numpy import float32
 from numpy.typing import NDArray
@@ -113,7 +113,7 @@ async def embed(facets: Facets, repository: str) -> Cluster:
             return [ ]
 
     tasks = tqdm_asyncio.gather(
-        *(read(path) for path, _ in repo.index.entries),
+        *(read(path.decode("utf-8")) for path in repo.open_index().paths()),
         desc = "Reading files",
         unit = "file",
         leave = False
