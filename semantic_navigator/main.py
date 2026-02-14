@@ -22,7 +22,9 @@ from numpy.typing import NDArray
 from pathlib import PurePath
 from pydantic import BaseModel
 from openai import AsyncOpenAI
+from sklearn.neighbors import NearestNeighbors
 from tiktoken import Encoding
+from typing import Iterable
 from tqdm.asyncio import tqdm_asyncio
 
 max_clusters = 20
@@ -75,7 +77,7 @@ async def embed(facets: Facets, directory: str) -> Cluster:
     try:
         repo = Repo.discover(directory)
 
-        def generate_paths():
+        def generate_paths() -> Iterable[str]:
             for bytestring in repo.open_index().paths():
                 path = bytestring.decode("utf-8")
 
@@ -89,13 +91,12 @@ async def embed(facets: Facets, directory: str) -> Cluster:
                     pass
 
     except NotGitRepository:
-        def generate_paths():
+        def generate_paths() -> Iterable[str]:
             for entry in os.scandir(directory):
                 if entry.is_file(follow_symlinks = False):
                     yield entry.path
 
-
-    async def read(path):
+    async def read(path) -> list[tuple[str, str]]:
         try:
             absolute_path = os.path.join(directory, path)
 
@@ -151,7 +152,7 @@ async def embed(facets: Facets, directory: str) -> Cluster:
 
     max_embeds = math.floor(max_tokens_per_batch_embed / max_tokens_per_embed)
 
-    async def embed_batch(input):
+    async def embed_batch(input) -> list[NDArray[float32]]:
         response = await facets.openai_client.embeddings.create(
             model = facets.embedding_model,
             input = input
@@ -216,8 +217,8 @@ def cluster(input: Cluster) -> list[Cluster]:
     # same result as K nearest neighbors.  We want the K nearest neighbors
     # algorithm to weakly inform the spectral clustering algorithm without
     # dominating the result.
-    def get_nearest_neighbors(n_neighbors):
-        nearest_neighbors = sklearn.neighbors.NearestNeighbors(
+    def get_nearest_neighbors(n_neighbors: int) -> tuple[int, int, NearestNeighbors]:
+        nearest_neighbors = NearestNeighbors(
             n_neighbors = n_neighbors,
             metric = "cosine",
             n_jobs = -1
@@ -362,7 +363,7 @@ class Tree:
     files: list[str]
     children: list["Tree"]
 
-def to_pattern(files):
+def to_pattern(files: list[str]) -> str:
     prefix = os.path.commonprefix(files)
     suffix = os.path.commonprefix([ file[len(prefix):][::-1] for file in files ])[::-1]
 
