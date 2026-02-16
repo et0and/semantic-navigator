@@ -1,9 +1,12 @@
 # Semantic project navigator
 
+Introductory blog post about this tool: [Browse code by meaning](https://haskellforall.com/2026/02/browse-code-by-meaning).
+
 This project provides a tool that lets you browse a repository's files
 by their meaning:
 
 https://github.com/user-attachments/assets/95f04087-453d-413e-8661-5bcd7dce4062
+
 
 ## Setup
 
