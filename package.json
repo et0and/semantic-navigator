@@ -1,5 +1,5 @@
 {
-  "name": "ovid",
+  "name": "@et0and/ovid",
   "version": "0.0.2",
   "description": "Browse a repository's files by semantic meaning",
   "type": "module",
