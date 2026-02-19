@@ -74,9 +74,9 @@ async function fetchCopilotToken(githubToken: string): Promise<{ token: string; 
     method: "GET",
     headers: {
       Authorization: `token ${githubToken}`,
-      "Editor-Version": "semantic-navigator/1.0.0",
-      "Editor-Plugin-Version": "semantic-navigator/1.0.0",
-      "User-Agent": "semantic-navigator",
+      "Editor-Version": "vscode/1.95.0",
+      "Editor-Plugin-Version": "copilot/1.246.0",
+      "User-Agent": "GitHubCopilotChat/0.22.4",
     },
   })
 

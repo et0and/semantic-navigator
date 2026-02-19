@@ -93,25 +93,30 @@ export async function labelNodes(
   const children = splitCluster(cluster)
 
   if (children.length === 1) {
-    // Leaf cluster: label each file individually
+    // Leaf cluster: label each file individually, in batches of 5 to stay
+    // within the model's prompt token limit.
     const entries = cluster.entries
-    let labels = await labelFiles(config, entries)
-
-    // Guard: align label count with entry count (Copilot may return fewer)
-    if (labels.length < entries.length) {
-      const missing = entries.length - labels.length
-      labels = [
-        ...labels,
-        ...Array.from({ length: missing }, () => ({
-          overarchingTheme: "",
-          distinguishingFeature: "",
-          label: "unlabelled",
-        })),
-      ]
+    const BATCH = 5
+    const allLabels: import("./labels.ts").Label[] = []
+    for (let i = 0; i < entries.length; i += BATCH) {
+      const batch = entries.slice(i, i + BATCH)
+      let batchLabels = await labelFiles(config, batch)
+      if (batchLabels.length < batch.length) {
+        const missing = batch.length - batchLabels.length
+        batchLabels = [
+          ...batchLabels,
+          ...Array.from({ length: missing }, () => ({
+            overarchingTheme: "",
+            distinguishingFeature: "",
+            label: "unlabelled",
+          })),
+        ]
+      }
+      allLabels.push(...batchLabels)
     }
 
     return entries.map((entry, i) => ({
-      label: `${entry.path}: ${labels[i]!.label}`,
+      label: `${entry.path}: ${allLabels[i]!.label}`,
       files: [entry.path],
       children: [],
     }))

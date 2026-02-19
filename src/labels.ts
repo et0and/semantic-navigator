@@ -106,7 +106,8 @@ async function chatComplete(
     })
 
     if (!resp.ok) {
-      lastError = new Error(`Copilot API error: HTTP ${resp.status} ${resp.statusText}`)
+      const errBody = await resp.text().catch(() => "")
+      lastError = new Error(`Copilot API error: HTTP ${resp.status} ${resp.statusText} — ${errBody}`)
       // Retry on 5xx
       if (resp.status >= 500) {
         await Bun.sleep(1000 * (attempt + 1))

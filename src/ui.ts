@@ -42,6 +42,8 @@ const THEME = {
   statusColor:  "#bb9af7",
 }
 
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
 // ---------------------------------------------------------------------------
 // Flat node model for scroll-based rendering
 // ---------------------------------------------------------------------------
@@ -79,7 +81,7 @@ function nodeKey(tree: Tree, depth: number): string {
 // ---------------------------------------------------------------------------
 
 export interface ProgressState {
-  phase: "reading" | "embedding" | "clustering" | "labelling" | "done"
+  phase: "reading" | "embedding" | "clustering" | "labelling" | "working" | "done"
   done: number
   total: number
   message?: string
@@ -104,6 +106,8 @@ export class SemanticNavigatorUI {
 
   // Progress state (shown before tree is ready)
   private progress: ProgressState = { phase: "reading", done: 0, total: 0 }
+  private spinnerTimer: ReturnType<typeof setInterval> | null = null
+  private spinnerIndex = 0
 
   // Row renderables (reused by rebuildRows)
   private rowRenderables: TextRenderable[] = []
@@ -144,7 +148,7 @@ export class SemanticNavigatorUI {
     })
     this.headerText = new TextRenderable(this.renderer, {
       id: "header-text",
-      content: " semantic-navigator ",
+      content: " ovid ",
       fg: THEME.statusColor,
     })
     headerBox.add(this.headerText)
@@ -277,6 +281,11 @@ export class SemanticNavigatorUI {
 
   updateProgress(state: ProgressState): void {
     this.progress = state
+    if (state.phase === "working") {
+      this.startSpinner()
+    } else {
+      this.stopSpinner()
+    }
     this.renderProgress()
   }
 
@@ -290,6 +299,7 @@ export class SemanticNavigatorUI {
       case "embedding":  phaseLabel = "Embedding"; break
       case "clustering": phaseLabel = "Clustering"; break
       case "labelling":  phaseLabel = "Labelling"; break
+      case "working":    phaseLabel = "Working"; break
       default:           phaseLabel = "Done"; break
     }
 
@@ -297,14 +307,17 @@ export class SemanticNavigatorUI {
       ? `${phaseLabel}: ${done}/${total} (${pct}%)`
       : message ?? phaseLabel
 
-    this.headerText.content = ` semantic-navigator  ${statusLine}`
+    this.headerText.content = ` ovid ${statusLine}`
 
     // Clear rows and show a single status line
     this.clearRows()
     const id = "status-line"
+    const spinner = phase === "working"
+      ? `${SPINNER_FRAMES[this.spinnerIndex % SPINNER_FRAMES.length] ?? "•"} `
+      : ""
     const statusText = new TextRenderable(this.renderer, {
       id,
-      content: `  ${statusLine}…`,
+      content: `  ${spinner}${statusLine}…`,
       fg: THEME.statusColor,
     })
     this.scrollBox.add(statusText)
@@ -312,11 +325,28 @@ export class SemanticNavigatorUI {
     this.rowIds = [id]
   }
 
+  private startSpinner(): void {
+    if (this.spinnerTimer !== null) return
+    this.spinnerTimer = setInterval(() => {
+      if (this.progress.phase !== "working") return
+      this.spinnerIndex = (this.spinnerIndex + 1) % SPINNER_FRAMES.length
+      this.renderProgress()
+    }, 80)
+  }
+
+  private stopSpinner(): void {
+    if (this.spinnerTimer === null) return
+    clearInterval(this.spinnerTimer)
+    this.spinnerTimer = null
+    this.spinnerIndex = 0
+  }
+
   // ---------------------------------------------------------------------------
   // Tree display (after tree is ready)
   // ---------------------------------------------------------------------------
 
   setTree(tree: Tree): void {
+    this.stopSpinner()
     this.tree = tree
 
     // Auto-expand root and its direct children
@@ -326,7 +356,7 @@ export class SemanticNavigatorUI {
     this.renderRows()
 
     this.headerText.content =
-      ` semantic-navigator  ${tree.label} (${tree.files.length} files)`
+      ` ovid ${tree.label} (${tree.files.length} files)`
   }
 
   private rebuildFlatList(): void {
@@ -455,6 +485,7 @@ export class SemanticNavigatorUI {
   // ---------------------------------------------------------------------------
 
   destroy(): void {
+    this.stopSpinner()
     this.renderer.destroy()
   }
 }

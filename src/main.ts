@@ -30,10 +30,10 @@ import type { CopilotConfig } from "./labels.ts"
 // ---------------------------------------------------------------------------
 
 const program = new Command()
-  .name("semantic-navigator")
+  .name("ovid")
   .description("Browse a repository's files by semantic meaning")
   .argument("[directory]", "Directory to analyse (default: current working directory)", ".")
-  .option("--completion-model <model>", "Copilot model to use for labelling", "gpt-4o-mini")
+  .option("--completion-model <model>", "Copilot model to use for labelling", "gpt-5-mini")
   .option("--max-files <n>", "Maximum number of files to index", (v) => parseInt(v, 10), 2000)
   .option("--max-file-bytes <n>", "Skip files larger than this many bytes", (v) => parseInt(v, 10), 1_000_000)
   .option("--exclude-glob <pattern...>", "Glob patterns to exclude (repeatable)", DEFAULT_EXCLUDES)
