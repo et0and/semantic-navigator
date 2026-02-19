@@ -1,0 +1,26 @@
+{
+  "name": "ovid",
+  "version": "0.0.1",
+  "description": "Browse a repository's files by semantic meaning",
+  "type": "module",
+  "bin": {
+    "ovid": "./bin/ovid.js"
+  },
+  "scripts": {
+    "start": "bun run src/main.ts",
+    "build": "bun build src/main.ts --target=bun --outdir=dist --external=onnxruntime-node"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.4.0",
+    "@octokit/auth-oauth-device": "^8.0.3",
+    "@opentui/core": "^0.1.80",
+    "commander": "^13.1.0",
+    "ml-kmeans": "^6.0.0",
+    "tiktoken": "^1.0.21",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.8.2"
+  }
+}
