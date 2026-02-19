@@ -95,19 +95,24 @@ function connectedComponents(indices: Int32Array[], N: number): number {
 }
 
 /**
- * Build the (dense) normalised Laplacian from the affinity matrix (stored as
- * a list of sparse {row,col,val} triples) and return it as a dense matrix
- * plus the degree diagonal `dd`.
+ * Build the degree diagonal `dd` from sparse affinity triplets, then return
+ * a sparse matvec closure for the *negated* normalised Laplacian (-L_norm).
+ *
+ * L_norm = I - D^{-1/2} A D^{-1/2}
+ * -L_norm = D^{-1/2} A D^{-1/2} - I
+ *
+ * The matvec avoids allocating an N×N dense matrix — at N=2000, k_sparse≈7,
+ * this reduces the cost per multiply from O(N²)=4M to O(N·k)=14k ops.
  */
-function buildNormalisedLaplacian(
+function buildNormLaplacianSparseMatvec(
   sparseAffinity: Array<{ i: number; j: number; v: number }>,
   N: number
-): { L: Matrix; dd: Float64Array } {
+): { matvec: (v: Float64Array) => Float64Array; dd: Float64Array } {
   // Accumulate row sums (degree) for normalisation
   const degree = new Float64Array(N)
   for (const { i, j, v } of sparseAffinity) {
-    degree[i] = (degree[i] ?? 0) + v
-    if (i !== j) degree[j] = (degree[j] ?? 0) + v
+    degree[i]! += v
+    if (i !== j) degree[j]! += v
   }
 
   const dd = new Float64Array(N)
@@ -115,31 +120,29 @@ function buildNormalisedLaplacian(
     dd[i] = degree[i]! > 1e-12 ? 1 / Math.sqrt(degree[i]!) : 0
   }
 
-  // L_norm = I - D^{-1/2} A D^{-1/2}
-  // We start from identity
-  const L: Matrix = Array.from({ length: N }, (_, i) => {
-    const row = new Float64Array(N)
-    row[i] = 1
-    return row
-  })
+  // Pre-compute normalised weights once so the closure stays cheap.
+  // w_ij = v * dd[i] * dd[j]  (the off-diagonal contribution to A_norm)
+  const normAffinity = sparseAffinity.map(({ i, j, v }) => ({
+    i,
+    j,
+    w: v * dd[i]! * dd[j]!,
+  }))
 
-  // Subtract normalised affinity contributions
-  for (const { i, j, v } of sparseAffinity) {
-    const w = v * dd[i]! * dd[j]!
-    const rowI = L[i]!
-    rowI[j] = (rowI[j] ?? 0) - w
-    if (i !== j) {
-      const rowJ = L[j]!
-      rowJ[i] = (rowJ[i] ?? 0) - w
+  // Matvec for -L_norm = A_norm - I
+  // result[i] = -v[i] + sum_j w_ij * v[j]   (using symmetry)
+  const matvecFn = (vec: Float64Array): Float64Array => {
+    const out = new Float64Array(N)
+    // Start from -I · vec
+    for (let i = 0; i < N; i++) out[i] = -vec[i]!
+    // Add symmetric A_norm contributions
+    for (const { i, j, w } of normAffinity) {
+      out[i]! += w * vec[j]!
+      if (i !== j) out[j]! += w * vec[i]!
     }
+    return out
   }
 
-  // Clamp diagonal to 1 (matches scipy behaviour after set_diag)
-  for (let i = 0; i < N; i++) {
-    L[i]![i] = 1
-  }
-
-  return { L, dd }
+  return { matvec: matvecFn, dd }
 }
 
 /**
@@ -171,35 +174,24 @@ function normaliseVec(v: Float64Array): number {
   return n
 }
 
-/** Multiply matrix M by vector v */
-function matvec(M: Matrix, v: Float64Array): Float64Array<ArrayBuffer> {
-  const N = M.length
-  const out = new Float64Array(N) as Float64Array<ArrayBuffer>
-  for (let i = 0; i < N; i++) {
-    out[i] = dot(M[i]!, v)
-  }
-  return out
-}
-
 /**
  * Randomised power-iteration with deflation to extract the `k` eigenpairs
- * corresponding to the *smallest* eigenvalues of a symmetric matrix M.
+ * corresponding to the *smallest* eigenvalues of a symmetric matrix.
  *
- * M is the **negated** Laplacian (M = -L), so its *largest* eigenvalues
- * correspond to L's smallest — matching the Python code which does `laplacian *= -1`.
- *
- * We use shifted inverse iteration: to find small eigenvalues of L we find
- * large eigenvalues of (-L + shift*I) where shift ≈ 1 (the diagonal was set
- * to 1 above).  We iterate on M = -L and take the top-k eigenvectors, then
- * negate the eigenvalues back.
+ * Instead of a dense matrix, accepts a sparse `matvecFn` closure so that the
+ * per-iteration cost is O(N·k_sparse) rather than O(N²).  The closure should
+ * implement multiplication by the *negated* Laplacian (-L_norm), whose top
+ * eigenvalues correspond to L_norm's bottom ones (matching the Python code
+ * which does `laplacian *= -1`).
  */
 function topKEigenpairs(
-  negL: Matrix,
+  matvecFn: (v: Float64Array) => Float64Array,
+  n: number,
   k: number,
   maxIter = 300,
   tol = 1e-6
 ): { values: Float64Array<ArrayBuffer>; vectors: Float64Array<ArrayBuffer>[] } {
-  const N = negL.length
+  const N = n
   const rng = seededRng(42)
 
   const vectors: Float64Array<ArrayBuffer>[] = []
@@ -207,7 +199,7 @@ function topKEigenpairs(
 
   for (let idx = 0; idx < k; idx++) {
     // Random start
-    let v = Float64Array.from({ length: N }, () => rng() * 2 - 1)
+    let v = Float64Array.from({ length: N }, () => rng() * 2 - 1) as Float64Array<ArrayBuffer>
     normaliseVec(v)
 
     // Deflate against already-found vectors
@@ -216,7 +208,7 @@ function topKEigenpairs(
 
     let lambda = 0
     for (let iter = 0; iter < maxIter; iter++) {
-      const Mv = matvec(negL, v)
+      const Mv = matvecFn(v) as Float64Array<ArrayBuffer>
 
       // Deflate
       for (const u of vectors) subtractProjection(Mv, u)
@@ -364,6 +356,29 @@ export function splitCluster(input: Cluster): Cluster[] {
 
   const normalized = normaliseRows(matFromEmbeds(input.entries))
 
+  // --- Precompute all pairwise distances once (O(N²)) ---
+  // Each row is sorted ascending so we can slice any k cheaply.
+  const allDistances: Array<Array<[number, number]>> = Array.from({ length: N }, () => [])
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      if (j === i) continue
+      allDistances[i]!.push([cosDist(normalized[i]!, normalized[j]!), j])
+    }
+    allDistances[i]!.sort((a, b) => a[0] - b[0])
+  }
+
+  /** Slice sorted rows to get k-NN result for any k in O(N·k). */
+  function knnFromPrecomputed(k: number): { distances: Float64Array[]; indices: Int32Array[] } {
+    const distances: Float64Array[] = []
+    const indices: Int32Array[] = []
+    for (let i = 0; i < N; i++) {
+      const row = allDistances[i]!.slice(0, k)
+      distances.push(Float64Array.from(row.map((x) => x[0])))
+      indices.push(Int32Array.from(row.map((x) => x[1])))
+    }
+    return { distances, indices }
+  }
+
   // --- Adaptive k-NN: find smallest k that gives 1 connected component ---
   const candidateKs: number[] = []
   for (let n = 0; ; n++) {
@@ -377,7 +392,7 @@ export function splitCluster(input: Cluster): Cluster[] {
   let chosenKnnResult: { distances: Float64Array[]; indices: Int32Array[] } | null = null
 
   for (const k of candidateKs) {
-    const knnResult = knn(normalized, k)
+    const knnResult = knnFromPrecomputed(k)
     const nComponents = connectedComponents(knnResult.indices, N)
     if (nComponents === 1) {
       chosenK = k
@@ -387,8 +402,7 @@ export function splitCluster(input: Cluster): Cluster[] {
   }
 
   if (chosenKnnResult === null) {
-    // Fallback: compute for the last candidate (floor(N/2))
-    chosenKnnResult = knn(normalized, chosenK)
+    chosenKnnResult = knnFromPrecomputed(chosenK)
   }
 
   const { distances, indices } = chosenKnnResult
@@ -411,19 +425,12 @@ export function splitCluster(input: Cluster): Cluster[] {
     }
   }
 
-  // --- Normalised Laplacian ---
-  const { L, dd } = buildNormalisedLaplacian(sparseAffinity, N)
-
-  // Negate L (as Python does `laplacian *= -1`) so power iteration finds
-  // eigenvectors of -L, whose top eigenvalues correspond to L's bottom ones.
-  const negL: Matrix = L.map((row) => {
-    const r = Float64Array.from(row)
-    for (let i = 0; i < r.length; i++) r[i]! *= -1
-    return r
-  })
+  // --- Sparse normalised Laplacian matvec ---
+  // Avoids building an N×N dense matrix; matvec cost is O(N·k_sparse) vs O(N²).
+  const { matvec: negLMatvec, dd } = buildNormLaplacianSparseMatvec(sparseAffinity, N)
 
   const k = Math.min(MAX_CLUSTERS + 1, N)
-  const { values: rawValues, vectors } = topKEigenpairs(negL, k)
+  const { values: rawValues, vectors } = topKEigenpairs(negLMatvec, N, k)
 
   // Eigenvalues were of -L; flip sign back to get L eigenvalues
   const eigenvalues = Float64Array.from(rawValues, (v) => -v)

@@ -15,6 +15,7 @@
 
 import { Command } from "commander"
 import path from "node:path"
+import { createHash } from "node:crypto"
 
 import { discoverFiles, DEFAULT_EXCLUDES, type FsOptions } from "./fs.ts"
 import { chunkFile } from "./tokenize.ts"
@@ -24,6 +25,7 @@ import { buildTree } from "./tree.ts"
 import { clearAuthCache, getCopilotToken } from "./auth.ts"
 import { SemanticNavigatorUI, type ProgressState } from "./ui.ts"
 import type { CopilotConfig } from "./labels.ts"
+import { treeFingerprint, getCachedTree, setCachedTree } from "./cache.ts"
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -40,6 +42,7 @@ const program = new Command()
   .option("--read-concurrency <n>", "Concurrent file reads", (v) => parseInt(v, 10), 64)
   .option("--embed-batch-size <n>", "Chunks per embedding batch", (v) => parseInt(v, 10), 32)
   .option("--embed-concurrency <n>", "Concurrent embedding batches", (v) => parseInt(v, 10), 2)
+  .option("--no-cache", "Skip reading from cache; force re-embed and re-label")
   .option("--logout", "Clear cached GitHub / Copilot credentials and exit")
   .helpOption("-h, --help", "Show help")
 
@@ -60,6 +63,7 @@ async function main(): Promise<void> {
     readConcurrency: number
     embedBatchSize: number
     embedConcurrency: number
+    cache: boolean
     logout: boolean | undefined
   }>()
 
@@ -167,6 +171,7 @@ async function main(): Promise<void> {
     model: DEFAULT_EMBEDDING_MODEL,
     batchSize: opts.embedBatchSize,
     concurrency: opts.embedConcurrency,
+    noCache: !opts.cache,
   }
 
   let embedEntriesRaw: EmbedEntry[] | undefined
@@ -184,7 +189,32 @@ async function main(): Promise<void> {
   }
 
   // ---------------------------------------------------------------------------
-  // Step 5: Spectral clustering (CPU-bound, synchronous)
+  // Step 5: Compute tree fingerprint and check tree cache
+  // ---------------------------------------------------------------------------
+
+  // Build a map of relativePath → sha256(content) for all discovered files.
+  const fileHashes = new Map<string, string>()
+  for (const f of resolvedFiles) {
+    fileHashes.set(
+      f.relativePath,
+      createHash("sha256").update(f.content).digest("hex").slice(0, 16)
+    )
+  }
+
+  const fingerprint = treeFingerprint(opts.completionModel, fileHashes)
+  const noCache = !opts.cache
+
+  if (!noCache) {
+    const cached = getCachedTree(fingerprint)
+    if (cached !== null) {
+      ui.setTree(cached)
+      // The UI event loop keeps the process alive until the user presses q/Esc.
+      return
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Step 6: Spectral clustering (CPU-bound, synchronous)
   // ---------------------------------------------------------------------------
 
   ui.updateProgress({
@@ -201,7 +231,7 @@ async function main(): Promise<void> {
   await Bun.sleep(0)
 
   // ---------------------------------------------------------------------------
-  // Step 6: Build labelled tree
+  // Step 7: Build labelled tree
   // ---------------------------------------------------------------------------
 
   ui.updateProgress({
@@ -223,8 +253,11 @@ async function main(): Promise<void> {
   }
   const tree = treeRaw!
 
+  // Persist to tree cache for future runs
+  setCachedTree(fingerprint, tree)
+
   // ---------------------------------------------------------------------------
-  // Step 7: Hand the tree to the UI
+  // Step 8: Hand the tree to the UI
   // ---------------------------------------------------------------------------
 
   ui.setTree(tree)

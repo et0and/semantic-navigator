@@ -1,5 +1,6 @@
 import { pipeline, type FeatureExtractionPipeline } from "@huggingface/transformers"
 import type { Chunk } from "./tokenize.ts"
+import { getCachedEmbedding, setCachedEmbedding, flushEmbedCache } from "./cache.ts"
 
 export const DEFAULT_EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2"
 
@@ -19,6 +20,8 @@ export interface EmbedOptions {
   model: string
   batchSize: number
   concurrency: number
+  /** When true, skip reading from cache (but still write to it). */
+  noCache?: boolean
 }
 
 let _pipe: FeatureExtractionPipeline | null = null
@@ -81,6 +84,7 @@ async function embedBatch(
 
 /**
  * Embed all chunks using the local model, with batching + concurrency limits.
+ * Chunks whose text is already in the embedding cache are skipped.
  * Calls `onProgress(done, total)` after each batch completes.
  */
 export async function embedChunks(
@@ -90,44 +94,60 @@ export async function embedChunks(
 ): Promise<EmbedEntry[]> {
   if (chunks.length === 0) return []
 
-  const pipe = await getEmbedPipeline(opts.model)
+  // --- Cache pass: resolve hits immediately, collect misses for the model ---
+  const entries: EmbedEntry[] = new Array(chunks.length)
+  const missIndices: number[] = []
 
-  const batches: Chunk[][] = []
-  for (let i = 0; i < chunks.length; i += opts.batchSize) {
-    batches.push(chunks.slice(i, i + opts.batchSize))
+  if (!opts.noCache) {
+    for (let i = 0; i < chunks.length; i++) {
+      const cached = getCachedEmbedding(chunks[i]!.text)
+      if (cached !== null) {
+        entries[i] = { path: chunks[i]!.path, text: chunks[i]!.text, embedding: cached }
+      } else {
+        missIndices.push(i)
+      }
+    }
+  } else {
+    for (let i = 0; i < chunks.length; i++) missIndices.push(i)
   }
 
-  const entries: EmbedEntry[] = new Array(chunks.length)
-  let chunkIndex = 0
-  let done = 0
+  let done = chunks.length - missIndices.length
+  onProgress?.(done, chunks.length)
 
-  for (let i = 0; i < batches.length; i += opts.concurrency) {
-    const concurrentBatches = batches.slice(i, i + opts.concurrency)
-    const startIndex = chunkIndex
+  if (missIndices.length > 0) {
+    const pipe = await getEmbedPipeline(opts.model)
+    const missChunks = missIndices.map((i) => chunks[i]!)
 
-    const batchResults = await Promise.all(
-      concurrentBatches.map((batch) =>
-        embedBatch(pipe, batch.map((c) => c.text))
-      )
-    )
-
-    let offset = startIndex
-    for (let b = 0; b < concurrentBatches.length; b++) {
-      const batch = concurrentBatches[b]!
-      const embeddings = batchResults[b]!
-      for (let j = 0; j < batch.length; j++) {
-        const chunk = batch[j]!
-        entries[offset] = {
-          path: chunk.path,
-          text: chunk.text,
-          embedding: embeddings[j]!,
-        }
-        offset++
-      }
-      chunkIndex += batch.length
-      done += batch.length
-      onProgress?.(done, chunks.length)
+    const batches: number[][] = []
+    for (let i = 0; i < missChunks.length; i += opts.batchSize) {
+      batches.push(missIndices.slice(i, i + opts.batchSize))
     }
+
+    for (let i = 0; i < batches.length; i += opts.concurrency) {
+      const concurrentBatches = batches.slice(i, i + opts.concurrency)
+
+      const batchResults = await Promise.all(
+        concurrentBatches.map((idxBatch) =>
+          embedBatch(pipe, idxBatch.map((ci) => chunks[ci]!.text))
+        )
+      )
+
+      for (let b = 0; b < concurrentBatches.length; b++) {
+        const idxBatch = concurrentBatches[b]!
+        const embeddings = batchResults[b]!
+        for (let j = 0; j < idxBatch.length; j++) {
+          const ci = idxBatch[j]!
+          const chunk = chunks[ci]!
+          const embedding = embeddings[j]!
+          entries[ci] = { path: chunk.path, text: chunk.text, embedding }
+          setCachedEmbedding(chunk.text, embedding)
+        }
+        done += idxBatch.length
+        onProgress?.(done, chunks.length)
+      }
+    }
+
+    flushEmbedCache()
   }
 
   return entries

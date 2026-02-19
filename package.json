@@ -3,9 +3,6 @@
   "version": "0.0.3",
   "description": "Browse a repository's files by semantic meaning",
   "type": "module",
-  "bin": {
-    "ovid": "./bin/semantic-navigator.js"
-  },
   "files": [
     "bin",
     "src",
