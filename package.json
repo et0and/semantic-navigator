@@ -4,11 +4,18 @@
   "description": "Browse a repository's files by semantic meaning",
   "type": "module",
   "bin": {
-    "ovid": "./bin/ovid.js"
+    "ovid": "./bin/semantic-navigator.js"
   },
+  "files": [
+    "bin",
+    "src",
+    "README.md"
+  ],
   "scripts": {
     "start": "bun run src/main.ts",
-    "build": "bun build src/main.ts --target=bun --outdir=dist --external=onnxruntime-node"
+    "build": "bun build src/main.ts --target=bun --outdir=dist --external=onnxruntime-node",
+    "check": "bunx tsc --noEmit",
+    "prepublishOnly": "bun run check"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.4.0",
