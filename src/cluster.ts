@@ -345,8 +345,207 @@ function kmeans(
   return labels
 }
 
+const MINI_BATCH_THRESHOLD = 512
+const MINI_BATCH_SIZE = 128
+const MINI_BATCH_ITERS = 120
+const KMEANS_MAX_ITER = 60
+const KMEANS_RETRIES = 2
+const MINI_BATCH_RETRIES = 2
+
+interface ClusterState {
+  entries: EmbedEntry[]
+  points: Float64Array[]
+}
+
+function countLabels(labels: Int32Array, k: number): Int32Array {
+  const counts = new Int32Array(k)
+  for (let i = 0; i < labels.length; i++) {
+    const label = labels[i]
+    if (label !== undefined) counts[label] = (counts[label] ?? 0) + 1
+  }
+  return counts
+}
+
+function nearestCentroid(point: Float64Array, centroids: Float64Array[]): number {
+  let best = 0
+  let bestDist = Infinity
+  for (let c = 0; c < centroids.length; c++) {
+    const d = distSq(point, centroids[c]!)
+    if (d < bestDist) {
+      bestDist = d
+      best = c
+    }
+  }
+  return best
+}
+
+function assignLabels(points: Float64Array[], centroids: Float64Array[]): Int32Array {
+  const labels = new Int32Array(points.length)
+  for (let i = 0; i < points.length; i++) {
+    labels[i] = nearestCentroid(points[i]!, centroids)
+  }
+  return labels
+}
+
+function initRandomCentroids(
+  points: Float64Array[],
+  k: number,
+  rng: () => number
+): Float64Array[] {
+  const N = points.length
+  const centroids: Float64Array[] = []
+  const used = new Set<number>()
+  for (let c = 0; c < k; c++) {
+    let idx = Math.floor(rng() * N)
+    for (let attempts = 0; attempts < 4 && used.has(idx); attempts++) {
+      idx = Math.floor(rng() * N)
+    }
+    used.add(idx)
+    centroids.push(Float64Array.from(points[idx]!))
+  }
+  return centroids
+}
+
+function miniBatchKmeans(
+  points: Float64Array[],
+  k: number,
+  rng: () => number,
+  opts: { batchSize: number; maxIter: number }
+): Int32Array {
+  const N = points.length
+  if (N === 0) return new Int32Array()
+
+  const dim = points[0]!.length
+  const centroids = initRandomCentroids(points, k, rng)
+  const counts = new Int32Array(k)
+  const batchSize = Math.min(opts.batchSize, N)
+
+  for (let iter = 0; iter < opts.maxIter; iter++) {
+    for (let b = 0; b < batchSize; b++) {
+      const idx = Math.floor(rng() * N)
+      const point = points[idx]!
+      const c = nearestCentroid(point, centroids)
+      counts[c] = (counts[c] ?? 0) + 1
+      const centroid = centroids[c]!
+      const eta = 1 / (counts[c] ?? 1)
+      for (let d = 0; d < dim; d++) {
+        centroid[d]! = centroid[d]! + eta * (point[d]! - centroid[d]!)
+      }
+    }
+  }
+
+  return assignLabels(points, centroids)
+}
+
+function splitByProjection(points: Float64Array[], rng: () => number): Int32Array {
+  const N = points.length
+  const labels = new Int32Array(N)
+  if (N <= 1) return labels
+
+  const dim = points[0]!.length
+  const a = Math.floor(rng() * N)
+  let b = Math.floor(rng() * N)
+  if (b === a) b = (a + 1) % N
+
+  const pa = points[a]!
+  const pb = points[b]!
+  const dir = new Float64Array(dim)
+  for (let d = 0; d < dim; d++) dir[d]! = pa[d]! - pb[d]!
+
+  let min = Infinity
+  let max = -Infinity
+  const proj = new Float64Array(N)
+  for (let i = 0; i < N; i++) {
+    const p = points[i]!
+    let dot = 0
+    for (let d = 0; d < dim; d++) dot += p[d]! * dir[d]!
+    proj[i] = dot
+    if (dot < min) min = dot
+    if (dot > max) max = dot
+  }
+
+  const threshold = (min + max) / 2
+  for (let i = 0; i < N; i++) labels[i] = proj[i]! <= threshold ? 0 : 1
+
+  const counts = countLabels(labels, 2)
+  if ((counts[0] ?? 0) === 0 || (counts[1] ?? 0) === 0) {
+    const mid = Math.floor(N / 2)
+    for (let i = 0; i < N; i++) labels[i] = i < mid ? 0 : 1
+  }
+
+  return labels
+}
+
+function chooseBisectLabels(points: Float64Array[], rng: () => number): Int32Array {
+  const N = points.length
+  if (N <= 1) return new Int32Array(N)
+
+  const useMiniBatch = N >= MINI_BATCH_THRESHOLD
+  const retries = useMiniBatch ? MINI_BATCH_RETRIES : KMEANS_RETRIES
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const seed = Math.floor(rng() * 1_000_000_000)
+    const labels = useMiniBatch
+      ? miniBatchKmeans(points, 2, seededRng(seed), {
+          batchSize: MINI_BATCH_SIZE,
+          maxIter: MINI_BATCH_ITERS,
+        })
+      : kmeans(points, 2, KMEANS_MAX_ITER, seed)
+
+    const counts = countLabels(labels, 2)
+    const left = counts[0] ?? 0
+    const right = counts[1] ?? 0
+    if (left > 0 && right > 0) return labels
+  }
+
+  return splitByProjection(points, rng)
+}
+
+function bisectCluster(
+  cluster: ClusterState,
+  rng: () => number
+): { left: ClusterState; right: ClusterState } {
+  const { entries, points } = cluster
+  const N = entries.length
+  if (N <= 1) {
+    return {
+      left: { entries, points },
+      right: { entries: [], points: [] },
+    }
+  }
+
+  let labels = chooseBisectLabels(points, rng)
+  let leftEntries: EmbedEntry[] = []
+  let rightEntries: EmbedEntry[] = []
+  let leftPoints: Float64Array[] = []
+  let rightPoints: Float64Array[] = []
+
+  for (let i = 0; i < N; i++) {
+    if (labels[i] === 0) {
+      leftEntries.push(entries[i]!)
+      leftPoints.push(points[i]!)
+    } else {
+      rightEntries.push(entries[i]!)
+      rightPoints.push(points[i]!)
+    }
+  }
+
+  if (leftEntries.length === 0 || rightEntries.length === 0) {
+    const mid = Math.floor(N / 2)
+    leftEntries = entries.slice(0, mid)
+    rightEntries = entries.slice(mid)
+    leftPoints = points.slice(0, mid)
+    rightPoints = points.slice(mid)
+  }
+
+  return {
+    left: { entries: leftEntries, points: leftPoints },
+    right: { entries: rightEntries, points: rightPoints },
+  }
+}
+
 /**
- * Recursively split a Cluster into sub-clusters using spectral clustering.
+ * Recursively split a Cluster into sub-clusters using bisecting k-means.
  * Returns [input] when the cluster is small enough to be a leaf.
  */
 export function splitCluster(input: Cluster): Cluster[] {
@@ -355,140 +554,22 @@ export function splitCluster(input: Cluster): Cluster[] {
   if (N <= MAX_LEAVES) return [input]
 
   const normalized = normaliseRows(matFromEmbeds(input.entries))
+  const rng = seededRng(42)
 
-  // --- Precompute all pairwise distances once (O(N²)) ---
-  // Each row is sorted ascending so we can slice any k cheaply.
-  const allDistances: Array<Array<[number, number]>> = Array.from({ length: N }, () => [])
-  for (let i = 0; i < N; i++) {
-    for (let j = 0; j < N; j++) {
-      if (j === i) continue
-      allDistances[i]!.push([cosDist(normalized[i]!, normalized[j]!), j])
+  const work: ClusterState[] = [{ entries: input.entries, points: normalized }]
+  const leaves: Cluster[] = []
+
+  while (work.length > 0) {
+    const cluster = work.pop()!
+    if (cluster.entries.length <= MAX_LEAVES) {
+      leaves.push({ entries: cluster.entries })
+      continue
     }
-    allDistances[i]!.sort((a, b) => a[0] - b[0])
+
+    const { left, right } = bisectCluster(cluster, rng)
+    if (right.entries.length > 0) work.push(right)
+    if (left.entries.length > 0) work.push(left)
   }
 
-  /** Slice sorted rows to get k-NN result for any k in O(N·k). */
-  function knnFromPrecomputed(k: number): { distances: Float64Array[]; indices: Int32Array[] } {
-    const distances: Float64Array[] = []
-    const indices: Int32Array[] = []
-    for (let i = 0; i < N; i++) {
-      const row = allDistances[i]!.slice(0, k)
-      distances.push(Float64Array.from(row.map((x) => x[0])))
-      indices.push(Int32Array.from(row.map((x) => x[1])))
-    }
-    return { distances, indices }
-  }
-
-  // --- Adaptive k-NN: find smallest k that gives 1 connected component ---
-  const candidateKs: number[] = []
-  for (let n = 0; ; n++) {
-    const k = Math.round(Math.exp(n))
-    if (k >= N) break
-    candidateKs.push(k)
-  }
-  candidateKs.push(Math.floor(N / 2))
-
-  let chosenK = candidateKs[candidateKs.length - 1]!
-  let chosenKnnResult: { distances: Float64Array[]; indices: Int32Array[] } | null = null
-
-  for (const k of candidateKs) {
-    const knnResult = knnFromPrecomputed(k)
-    const nComponents = connectedComponents(knnResult.indices, N)
-    if (nComponents === 1) {
-      chosenK = k
-      chosenKnnResult = knnResult
-      break
-    }
-  }
-
-  if (chosenKnnResult === null) {
-    chosenKnnResult = knnFromPrecomputed(chosenK)
-  }
-
-  const { distances, indices } = chosenKnnResult
-
-  // --- Build affinity matrix (sparse triplets) ---
-  // σ[i] = distance to Kth nearest neighbour
-  const sigmas = distances.map((d) => d[d.length - 1]!)
-
-  const sparseAffinity: Array<{ i: number; j: number; v: number }> = []
-
-  for (let i = 0; i < N; i++) {
-    for (let n = 0; n < chosenK; n++) {
-      const j = indices[i]![n]!
-      const d = distances[i]![n]!
-      const sigma_i = sigmas[i]!
-      const sigma_j = sigmas[j]!
-      const denom = Math.max(sigma_i * sigma_j, 1e-12)
-      const v = Math.exp(-(d * d) / denom)
-      sparseAffinity.push({ i, j, v })
-    }
-  }
-
-  // --- Sparse normalised Laplacian matvec ---
-  // Avoids building an N×N dense matrix; matvec cost is O(N·k_sparse) vs O(N²).
-  const { matvec: negLMatvec, dd } = buildNormLaplacianSparseMatvec(sparseAffinity, N)
-
-  const k = Math.min(MAX_CLUSTERS + 1, N)
-  const { values: rawValues, vectors } = topKEigenpairs(negLMatvec, N, k)
-
-  // Eigenvalues were of -L; flip sign back to get L eigenvalues
-  const eigenvalues = Float64Array.from(rawValues, (v) => -v)
-
-  // Sort by eigenvalue ascending (smallest first), skip index 0
-  const sortedIdx = Array.from({ length: k }, (_, i) => i).sort(
-    (a, b) => eigenvalues[a]! - eigenvalues[b]!
-  )
-
-  const sortedEigenvalues = Float64Array.from(sortedIdx, (i) => eigenvalues[i]!)
-  const sortedVectors = sortedIdx.map((i) => vectors[i]!)
-
-  deterministicSignFlip(sortedVectors)
-
-  // --- Eigengap heuristic (skip λ₀ ≈ 0) ---
-  // n_clusters = argmax(diff(eigenvalues[1:])) + 2
-  let maxGap = -Infinity
-  let nClusters = 2
-  for (let i = 1; i < sortedEigenvalues.length - 1; i++) {
-    const gap = sortedEigenvalues[i + 1]! - sortedEigenvalues[i]!
-    if (gap > maxGap) {
-      maxGap = gap
-      nClusters = i + 1 // 1-indexed + 1 for the off-by-one vs Python
-    }
-  }
-  nClusters = Math.max(2, Math.min(nClusters, MAX_CLUSTERS))
-
-  // --- Spectral embeddings: use eigenvectors 1..nClusters (skip 0) ---
-  // Build [N × nClusters] matrix, normalise each row
-  const spectralPoints: Float64Array[] = Array.from({ length: N }, () =>
-    new Float64Array(nClusters)
-  )
-  for (let c = 0; c < nClusters; c++) {
-    const vec = sortedVectors[c + 1] // skip smallest (index 0)
-    if (vec === undefined) break
-    for (let i = 0; i < N; i++) {
-      // Divide by dd[i] (matches Python `wide_spectral_embeddings = eigenvectors.T / dd`)
-      spectralPoints[i]![c] = (vec[i]! / dd[i]!)
-    }
-  }
-  // L2-normalise each row
-  for (const row of spectralPoints) {
-    let norm = 0
-    for (const v of row) norm += v * v
-    norm = Math.sqrt(norm)
-    if (norm > 1e-12) for (let d = 0; d < row.length; d++) row[d]! /= norm
-  }
-
-  // --- K-means ---
-  const labels = kmeans(spectralPoints, nClusters)
-
-  // Group entries by cluster label, preserving order
-  const groups = new Map<number, EmbedEntry[]>()
-  for (let i = 0; i < N; i++) {
-    const label = labels[i]!
-    if (!groups.has(label)) groups.set(label, [])
-    groups.get(label)!.push(input.entries[i]!)
-  }
-
-  return Array.from(groups.values()).map((entries) => ({ entries }))
+  return leaves
 }
