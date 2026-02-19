@@ -1,6 +1,6 @@
 {
   "name": "@et0and/ovid",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Browse a repository's files by semantic meaning",
   "type": "module",
   "files": [
